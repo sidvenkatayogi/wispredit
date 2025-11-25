@@ -1,0 +1,9 @@
+openai-whisper
+pynput
+sounddevice
+scipy
+pyperclip
+pyobjc-framework-Quartz
+pyobjc-framework-ApplicationServices
+rumps
+Pillow
