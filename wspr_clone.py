@@ -184,7 +184,7 @@ def transcribe_audio(frames):
             transcription_history.append(transcribed_text)
             if len(transcription_history) > 3:
                 transcription_history.pop(0)
-            
+
     except Exception as e:
         print(f"Error during transcription: {e}")
     finally:
