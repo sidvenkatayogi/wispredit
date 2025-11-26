@@ -65,7 +65,7 @@ def get_selected_text():
     return selected_text
 
 def check_if_editing_command(current_text, new_command, history):
-    print("--- Checking for Edit Command ---")
+    # print("--- Checking for Edit Command ---")
     if not GEMINI_API_KEY:
         print("GEMINI_API_KEY not set. Skipping edit check.")
         return False, None
@@ -137,7 +137,7 @@ def transcribe_audio(frames):
     write(filename, SAMPLE_RATE, audio_np)
     
     try:
-        result = model.transcribe(filename)
+        result = model.transcribe(filename, fp16=False)
         transcribed_text = result["text"].strip()
         if transcribed_text:
             text_to_paste = transcribed_text
@@ -246,6 +246,7 @@ class WsprEditApp(rumps.App):
                     controller.release('v')
             else:
                 print(f"Pasting: {text}")
+                print()
                 
                 # Move cursor to end (Right Arrow) bc we have currently selected all
                 controller.press(keyboard.Key.right)
