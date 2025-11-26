@@ -72,3 +72,7 @@ You can adjust settings in `src/config.py`:
 *   `HOTKEY`: Change the key combination (default: `{keyboard.Key.ctrl, keyboard.Key.space}`).
 *   `MODEL_SIZE`: Change the Whisper model size (default: `tiny.en`). Larger models are more accurate but slower.
 *   `SAMPLE_RATE`: Audio sample rate (default: `16000`).
+
+## License
+
+[MIT](LICENSE)
