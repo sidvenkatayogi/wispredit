@@ -10,8 +10,12 @@ import threading
 import os
 from AppKit import NSWorkspace
 import AppKit
+import google.generativeai as genai
+import ApplicationServices
+from dotenv import load_dotenv
 
-
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
 HOTKEY = {keyboard.Key.shift, keyboard.Key.cmd, keyboard.Key.space}
@@ -25,6 +29,14 @@ is_recording = False
 audio_frames = []
 model = None
 text_to_paste = None # Shared variable for thread communication
+transcription_history = []
+
+# Configure Gemini
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+else:
+    print("Warning: GEMINI_API_KEY not found in environment variables. Voice editing will be disabled.")
 
 def load_model():
     """Loads the Whisper model into memory."""
@@ -38,57 +50,146 @@ def load_model():
         rumps.alert("Error", f"Failed to load the Whisper model: {e}")
         return False
 
-def is_textbox_focused():
-    """Check if the currently focused UI element is a text box."""
-    workspace = NSWorkspace.sharedWorkspace()
-    active_app = workspace.frontmostApplication()
-    if not active_app:
-        return False
+def get_focused_textbox_info():
+    """Check if the currently focused UI element is a text box and return its value."""
     try:
-        system_events = AppKit.SBApplication.applicationWithBundleIdentifier_("com.apple.systemevents")
-        active_process = system_events.processes().filteredArrayUsingPredicate_(
-            AppKit.NSPredicate.predicateWithFormat_("bundleIdentifier == %@", active_app.bundleIdentifier())
-        ).firstObject()
-        if not active_process:
-            return False
-        focused_element = active_process.attributes().objectForKey_(AppKit.NSAccessibilityFocusedUIElementAttribute)
-        if not focused_element:
-            return False
-        role = focused_element.attributes().objectForKey_(AppKit.NSAccessibilityRoleAttribute)
-        text_roles = [
-            AppKit.NSAccessibilityTextFieldRole,
-            AppKit.NSAccessibilityTextAreaRole,
-            AppKit.NSAccessibilityTextViewRole,
-            "AXTextArea",
-            "AXTextField"
-        ]
-        return role in text_roles
-    except Exception:
-        return True
+        workspace = NSWorkspace.sharedWorkspace()
+        front_app = workspace.frontmostApplication()
+        if not front_app:
+            print("No frontmost application found.")
+            return False, None
+        
+        pid = front_app.processIdentifier()
+        ax_app = ApplicationServices.AXUIElementCreateApplication(pid)
+        
+        # Get focused element
+        error, focused_element = ApplicationServices.AXUIElementCopyAttributeValue(
+            ax_app, ApplicationServices.kAXFocusedUIElementAttribute, None
+        )
+        
+        if error != 0 or not focused_element:
+            print(f"Could not get focused element. Error: {error}")
+            return False, None
 
-def transcribe_audio():
+        # Get Role
+        error, role = ApplicationServices.AXUIElementCopyAttributeValue(
+            focused_element, ApplicationServices.kAXRoleAttribute, None
+        )
+        print(f"Focused Element Role: {role}")
+        
+        # Get Value
+        error_val, value = ApplicationServices.AXUIElementCopyAttributeValue(
+            focused_element, ApplicationServices.kAXValueAttribute, None
+        )
+        # Handle AXValue being an AXValue object or other types, though usually it's a string for text fields
+        print(f"Focused Element Value: {value}, Error: {error_val}")
+        
+        text_roles = ['AXTextArea', 'AXTextField']
+        
+        if role in text_roles:
+            return True, value
+            
+        # Check if editable if role is not standard
+        error_settable, is_settable = ApplicationServices.AXUIElementIsAttributeSettable(
+            focused_element, ApplicationServices.kAXValueAttribute, None
+        )
+        is_editable = (error_settable == 0) and is_settable
+        
+        if is_editable:
+             print("Element is editable.")
+             return True, value
+
+        return False, None
+    except Exception as e:
+        print(f"Error in get_focused_textbox_info: {e}")
+        return False, None
+
+def check_if_editing_command(current_text, new_command, history):
+    print("--- Checking for Edit Command ---")
+    if not GEMINI_API_KEY:
+        print("GEMINI_API_KEY not set. Skipping edit check.")
+        return False, None
+
+    try:
+        # Use gemini-2.0-flash as it is faster and more current
+        model_name = 'gemini-2.0-flash'
+        model = genai.GenerativeModel(model_name)
+        
+        history_str = "\n".join(history)
+        
+        prompt = f"""
+        You are a voice assistant helper.
+        
+        Context (previous commands):
+        {history_str}
+        
+        Current Text in Textbox:
+        {current_text}
+        
+        New Voice Command:
+        {new_command}
+        
+        Task:
+        Determine if the "New Voice Command" is an instruction to EDIT the "Current Text in Textbox".
+        Examples of edit commands: "replace hello with hi", "delete the last word", "make it all caps", "change the first sentence".
+        Examples of non-edit commands (just dictation): "hello world", "this is a test", "I want to go to the store".
+        
+        If it is an EDIT command, perform the edit on "Current Text in Textbox" and return the RESULTING TEXT ONLY. Do not output any reasoning or explanation.
+        If it is NOT an edit command (it's just new text to be typed), return exactly the string "NO_EDIT".
+        """
+        
+        print(f"Sending prompt to Gemini:\n{prompt}")
+        response = model.generate_content(prompt)
+        result = response.text.strip()
+        print(f"Gemini Response: {result}")
+        
+        if result == "NO_EDIT":
+            return False, None
+        else:
+            return True, result
+    except Exception as e:
+        print(f"Gemini Error: {e}")
+        print("Listing available models:")
+        try:
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    print(f"- {m.name}")
+        except:
+            pass
+        return False, None
+
+def transcribe_audio(frames):
     """Transcribes audio and places the text in the shared variable."""
-    global audio_frames, model, text_to_paste
-    if not audio_frames:
+    global model, text_to_paste
+    if not frames:
+        print("No audio frames to transcribe.")
         return
     
     print("Transcribing...")
-    audio_np = np.concatenate(audio_frames, axis=0)
-    audio_frames = []
+    audio_np = np.concatenate(frames, axis=0)
     
-    write(AUDIO_FILENAME, SAMPLE_RATE, audio_np)
+    # Use a unique filename to avoid conflicts
+    import uuid
+    filename = f"temp_audio_{uuid.uuid4()}.wav"
+    
+    write(filename, SAMPLE_RATE, audio_np)
     
     try:
-        result = model.transcribe(AUDIO_FILENAME)
+        result = model.transcribe(filename)
         transcribed_text = result["text"].strip()
         if transcribed_text:
             text_to_paste = transcribed_text # Put text in shared variable
             
+            # Update history
+            transcription_history.append(transcribed_text)
+            if len(transcription_history) > 3:
+                transcription_history.pop(0)
+            
     except Exception as e:
         print(f"Error during transcription: {e}")
     finally:
-        if os.path.exists(AUDIO_FILENAME):
-            os.remove(AUDIO_FILENAME)
+        if os.path.exists(filename):
+            os.remove(filename)
 
 def start_recording():
     """Starts recording audio from the microphone."""
@@ -111,13 +212,15 @@ def start_recording():
 
 def stop_recording():
     """Stops the audio recording and triggers transcription."""
-    global is_recording
+    global is_recording, audio_frames
     if not is_recording:
         return
     
     is_recording = False
     print("Recording stopped.")
-    threading.Thread(target=transcribe_audio).start()
+    # Pass a copy of the frames to the thread to avoid race conditions
+    frames_to_process = list(audio_frames)
+    threading.Thread(target=transcribe_audio, args=(frames_to_process,)).start()
 
 class WsprCloneApp(rumps.App):
     def __init__(self):
@@ -140,15 +243,50 @@ class WsprCloneApp(rumps.App):
             text = text_to_paste
             text_to_paste = None # Clear the variable
             
-            if is_textbox_focused():
-                print(f"Pasting: {text}")
-                pyperclip.copy(text)
+            is_textbox, current_value = get_focused_textbox_info()
+            
+            if is_textbox:
+                print(f"Focused element is a textbox. Current value: '{current_value}'")
+                is_edit = False
+                edited_text = None
                 
-                controller = Controller()
-                controller.press(keyboard.Key.cmd)
-                controller.press('v')
-                controller.release('v')
-                controller.release(keyboard.Key.cmd)
+                if current_value and isinstance(current_value, str) and GEMINI_API_KEY:
+                     print("Calling Gemini to check for edit command...")
+                     # Use history excluding the current command (which is 'text')
+                     # Note: 'text' was already added to transcription_history in transcribe_audio
+                     history_context = transcription_history[:-1]
+                     is_edit, edited_text = check_if_editing_command(current_value, text, history_context)
+                else:
+                    print(f"Skipping Gemini check. Value: {current_value}, Key Present: {bool(GEMINI_API_KEY)}")
+                
+                if is_edit and edited_text is not None:
+                    print(f"Editing detected. Old: {current_value}, New: {edited_text}")
+                    # Replace text
+                    controller = Controller()
+                    
+                    # Select All
+                    controller.press(keyboard.Key.cmd)
+                    controller.press('a')
+                    controller.release('a')
+                    controller.release(keyboard.Key.cmd)
+                    
+                    # Copy new text
+                    pyperclip.copy(edited_text)
+                    
+                    # Paste
+                    controller.press(keyboard.Key.cmd)
+                    controller.press('v')
+                    controller.release('v')
+                    controller.release(keyboard.Key.cmd)
+                else:
+                    print(f"Pasting: {text}")
+                    pyperclip.copy(text)
+                    
+                    controller = Controller()
+                    controller.press(keyboard.Key.cmd)
+                    controller.press('v')
+                    controller.release('v')
+                    controller.release(keyboard.Key.cmd)
 
     def update_menu_state(self):
         self.menu["Recording: OFF"].title = f"Recording: {'ON' if self.state_recording else 'OFF'}"

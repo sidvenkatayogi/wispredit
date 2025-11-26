@@ -7,3 +7,5 @@ pyobjc-framework-Quartz
 pyobjc-framework-ApplicationServices
 rumps
 Pillow
+google-generativeai
+python-dotenv
