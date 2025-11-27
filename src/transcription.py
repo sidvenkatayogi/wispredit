@@ -35,9 +35,6 @@ def transcribe_audio_frames(frames):
     print()
     audio_np = np.concatenate(frames, axis=0)
     
-    duration = len(audio_np) / SAMPLE_RATE
-    print(f"Audio duration: {duration:.2f} seconds")
-
     # Use a unique filename to avoid conflicts
     filename = f"temp_audio_{uuid.uuid4()}.wav"
     

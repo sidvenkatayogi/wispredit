@@ -5,7 +5,7 @@ import os
 from pynput import keyboard
 
 from .config import HOTKEY, GEMINI_API_KEY, SAMPLE_RATE
-from .audio import start_recording_stream, stop_recording_stream, init_audio_stream, close_audio_stream
+from .audio import start_recording_stream, stop_recording_stream
 from .transcription import load_model, transcribe_audio_frames
 from .llm import check_if_editing_command
 from .clipboard import select_all, copy_selection, paste_text, move_cursor_right
@@ -18,16 +18,10 @@ class WsprEditApp:
         self.text_to_paste = None
         self.transcription_history = []
         self.current_keys = set()
-        
-        # Initialize audio stream
-        init_audio_stream(SAMPLE_RATE)
 
     def transcribe_worker(self, frames):
         """Background worker for transcription."""
         transcribed_text = transcribe_audio_frames(frames)
-        print("Transcribing... 111")
-        print(f"Transcribed text: '{transcribed_text}'")
-        
         if transcribed_text:
             self.text_to_paste = transcribed_text
             
@@ -35,10 +29,6 @@ class WsprEditApp:
             self.transcription_history.append(transcribed_text)
             if len(self.transcription_history) > 3:
                 self.transcription_history.pop(0)
-            print("Transcribing... 222")
-        else:
-            print("No text transcribed.")
-            
 
     def start_recording_thread(self):
         """Starts the recording in a separate thread (since it blocks)."""
@@ -124,5 +114,3 @@ class WsprEditApp:
                 time.sleep(0.1)
         except KeyboardInterrupt:
             print("Exiting...")
-        finally:
-            close_audio_stream()
